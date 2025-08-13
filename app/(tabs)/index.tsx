@@ -13,87 +13,82 @@ import { LinearGradient } from 'expo-linear-gradient';
 import * as Animatable from 'react-native-animatable';
 import { useAuth } from '@/contexts/AuthContext';
 import { useSubscription } from '@/contexts/SubscriptionContext';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { getUserBlogPosts, BlogPost } from '@/lib/api';
+import { router } from 'expo-router';
 
 const { width } = Dimensions.get('window');
-
-interface Post {
-  id: string;
-  content: string;
-  platforms: string[];
-  createdAt: string;
-  status: 'draft' | 'published' | 'scheduled';
-  engagement?: {
-    likes: number;
-    shares: number;
-    comments: number;
-  };
-}
 
 export default function HomeScreen() {
   const { user } = useAuth();
   const { postsCount, maxPosts, isSubscribed } = useSubscription();
-  const [posts, setPosts] = useState<Post[]>([]);
+  const [posts, setPosts] = useState<BlogPost[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [stats, setStats] = useState({
     totalPosts: 0,
-    totalEngagement: 0,
-    averageEngagement: 0,
+    totalViews: 0,
+    totalLikes: 0,
+    averageViews: 0,
   });
 
   useEffect(() => {
-    loadPosts();
-    loadStats();
-  }, []);
+    if (user) {
+      loadBlogPosts();
+    }
+  }, [user]);
 
-  const loadPosts = async () => {
+  const loadBlogPosts = async () => {
+    if (!user) return;
+    
     try {
-      const savedPosts = await AsyncStorage.getItem('posts');
-      if (savedPosts) {
-        const parsedPosts = JSON.parse(savedPosts);
-        setPosts(parsedPosts.slice(0, 5)); // Show latest 5 posts
+      const result = await getUserBlogPosts(user.id);
+      if (result.success && result.data) {
+        const blogPosts = result.data.slice(0, 5); // Show latest 5 posts
+        setPosts(blogPosts);
+        calculateStats(result.data);
       }
     } catch (error) {
-      console.error('Error loading posts:', error);
+      console.error('Error loading blog posts:', error);
     }
   };
 
-  const loadStats = async () => {
-    try {
-      const savedPosts = await AsyncStorage.getItem('posts');
-      if (savedPosts) {
-        const parsedPosts = JSON.parse(savedPosts);
-        const totalPosts = parsedPosts.length;
-        const totalEngagement = parsedPosts.reduce((sum: number, post: Post) => {
-          if (post.engagement) {
-            return sum + post.engagement.likes + post.engagement.shares + post.engagement.comments;
-          }
-          return sum;
-        }, 0);
-        
-        setStats({
-          totalPosts,
-          totalEngagement,
-          averageEngagement: totalPosts > 0 ? Math.round(totalEngagement / totalPosts) : 0,
-        });
-      }
-    } catch (error) {
-      console.error('Error loading stats:', error);
-    }
+  const calculateStats = (allPosts: BlogPost[]) => {
+    const totalPosts = allPosts.length;
+    const totalViews = allPosts.reduce((sum, post) => sum + (post.views || 0), 0);
+    const totalLikes = allPosts.reduce((sum, post) => sum + (post.likes || 0), 0);
+    const averageViews = totalPosts > 0 ? Math.round(totalViews / totalPosts) : 0;
+
+    setStats({
+      totalPosts,
+      totalViews,
+      totalLikes,
+      averageViews,
+    });
   };
 
   const onRefresh = React.useCallback(() => {
     setRefreshing(true);
-    loadPosts();
-    loadStats();
+    loadBlogPosts();
     setTimeout(() => setRefreshing(false), 1000);
-  }, []);
+  }, [user]);
 
   const getGreeting = () => {
     const hour = new Date().getHours();
     if (hour < 12) return 'Good Morning';
     if (hour < 18) return 'Good Afternoon';
     return 'Good Evening';
+  };
+
+  const formatDate = (dateString: string) => {
+    return new Date(dateString).toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric'
+    });
+  };
+
+  const truncateContent = (content: string, maxLength: number = 150) => {
+    if (content.length <= maxLength) return content;
+    return content.substring(0, maxLength) + '...';
   };
 
   return (
@@ -105,13 +100,13 @@ export default function HomeScreen() {
       }
     >
       <LinearGradient
-        colors={['#667eea', '#764ba2']}
+        colors={['#1f2937', '#374151']}
         style={styles.header}
       >
         <Animatable.View animation="fadeInUp" duration={800}>
           <Text style={styles.greeting}>{getGreeting()}</Text>
-          <Text style={styles.userName}>{user?.email?.split('@')[0] || 'Creator'}</Text>
-          <Text style={styles.subtitle}>Ready to create amazing content?</Text>
+          <Text style={styles.userName}>{user?.email?.split('@')[0] || 'Writer'}</Text>
+          <Text style={styles.subtitle}>Ready to share your thoughts with the world?</Text>
         </Animatable.View>
       </LinearGradient>
 
@@ -119,7 +114,7 @@ export default function HomeScreen() {
         {/* Subscription Status */}
         <Animatable.View animation="fadeInUp" delay={200} style={styles.subscriptionCard}>
           <View style={styles.cardHeader}>
-            <Text style={styles.cardTitle}>Your Plan</Text>
+            <Text style={styles.cardTitle}>Writing Plan</Text>
             {!isSubscribed && (
               <View style={styles.badge}>
                 <Text style={styles.badgeText}>FREE</Text>
@@ -128,7 +123,7 @@ export default function HomeScreen() {
           </View>
           <View style={styles.progressContainer}>
             <Text style={styles.progressText}>
-              {postsCount} of {maxPosts} posts used this month
+              {postsCount} of {maxPosts} blog posts this month
             </Text>
             <View style={styles.progressBar}>
               <View
@@ -140,7 +135,10 @@ export default function HomeScreen() {
             </View>
           </View>
           {!isSubscribed && postsCount >= maxPosts && (
-            <TouchableOpacity style={styles.upgradeButton}>
+            <TouchableOpacity 
+              style={styles.upgradeButton}
+              onPress={() => router.push('/subscription')}
+            >
               <Text style={styles.upgradeButtonText}>Upgrade to Pro</Text>
             </TouchableOpacity>
           )}
@@ -150,15 +148,18 @@ export default function HomeScreen() {
         <Animatable.View animation="fadeInUp" delay={400} style={styles.statsContainer}>
           <View style={styles.statCard}>
             <Text style={styles.statNumber}>{stats.totalPosts}</Text>
-            <Text style={styles.statLabel}>Total Posts</Text>
+            <Text style={styles.statLabel}>Blog Posts</Text>
+            <Text style={styles.statIcon}>📝</Text>
           </View>
           <View style={styles.statCard}>
-            <Text style={styles.statNumber}>{stats.totalEngagement}</Text>
-            <Text style={styles.statLabel}>Total Engagement</Text>
+            <Text style={styles.statNumber}>{stats.totalViews}</Text>
+            <Text style={styles.statLabel}>Total Views</Text>
+            <Text style={styles.statIcon}>👁️</Text>
           </View>
           <View style={styles.statCard}>
-            <Text style={styles.statNumber}>{stats.averageEngagement}</Text>
-            <Text style={styles.statLabel}>Avg. Engagement</Text>
+            <Text style={styles.statNumber}>{stats.totalLikes}</Text>
+            <Text style={styles.statLabel}>Total Likes</Text>
+            <Text style={styles.statIcon}>❤️</Text>
           </View>
         </Animatable.View>
 
@@ -166,10 +167,16 @@ export default function HomeScreen() {
         <Animatable.View animation="fadeInUp" delay={600} style={styles.quickActionsCard}>
           <Text style={styles.cardTitle}>Quick Actions</Text>
           <View style={styles.actionButtons}>
-            <TouchableOpacity style={styles.actionButton}>
+            <TouchableOpacity 
+              style={styles.actionButton}
+              onPress={() => router.push('/(tabs)/create')}
+            >
               <Text style={styles.actionButtonText}>✏️ New Post</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.actionButton}>
+            <TouchableOpacity 
+              style={styles.actionButton}
+              onPress={() => router.push('/(tabs)/analytics')}
+            >
               <Text style={styles.actionButtonText}>📊 Analytics</Text>
             </TouchableOpacity>
           </View>
@@ -187,8 +194,14 @@ export default function HomeScreen() {
             <View style={styles.emptyState}>
               <Text style={styles.emptyStateTitle}>No posts yet</Text>
               <Text style={styles.emptyStateText}>
-                Create your first post to get started!
+                Start writing your first blog post to share your ideas!
               </Text>
+              <TouchableOpacity 
+                style={styles.createFirstPostButton}
+                onPress={() => router.push('/(tabs)/create')}
+              >
+                <Text style={styles.createFirstPostText}>Create Your First Post</Text>
+              </TouchableOpacity>
             </View>
           ) : (
             posts.map((post, index) => (
@@ -199,27 +212,25 @@ export default function HomeScreen() {
                 style={styles.postItem}
               >
                 <View style={styles.postContent}>
-                  <Text style={styles.postText} numberOfLines={2}>
-                    {post.content}
+                  <Text style={styles.postTitle} numberOfLines={1}>
+                    {post.title}
+                  </Text>
+                  <Text style={styles.postExcerpt} numberOfLines={2}>
+                    {post.excerpt || truncateContent(post.content)}
                   </Text>
                   <View style={styles.postMeta}>
-                    <View style={styles.platformTags}>
-                      {post.platforms.map((platform, idx) => (
-                        <View key={idx} style={styles.platformTag}>
-                          <Text style={styles.platformTagText}>
-                            {platform === 'twitter' ? '🐦' : '💼'} {platform}
-                          </Text>
-                        </View>
-                      ))}
-                    </View>
                     <Text style={styles.postDate}>
-                      {new Date(post.createdAt).toLocaleDateString()}
+                      {formatDate(post.created_at)}
                     </Text>
+                    <View style={styles.postStats}>
+                      <Text style={styles.statText}>👁️ {post.views}</Text>
+                      <Text style={styles.statText}>❤️ {post.likes}</Text>
+                    </View>
                   </View>
                 </View>
                 <View style={[
                   styles.statusIndicator,
-                  { backgroundColor: post.status === 'published' ? '#10B981' : '#F59E0B' }
+                  { backgroundColor: post.published ? '#10B981' : '#F59E0B' }
                 ]} />
               </Animatable.View>
             ))
@@ -233,7 +244,7 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#F9FAFB',
+    backgroundColor: '#111827',
   },
   contentContainer: {
     paddingBottom: 100,
@@ -245,7 +256,7 @@ const styles = StyleSheet.create({
   },
   greeting: {
     fontSize: 16,
-    color: 'rgba(255, 255, 255, 0.8)',
+    color: 'rgba(255, 255, 255, 0.7)',
     marginBottom: 4,
   },
   userName: {
@@ -256,7 +267,7 @@ const styles = StyleSheet.create({
   },
   subtitle: {
     fontSize: 16,
-    color: 'rgba(255, 255, 255, 0.9)',
+    color: 'rgba(255, 255, 255, 0.8)',
   },
   content: {
     flex: 1,
@@ -264,18 +275,12 @@ const styles = StyleSheet.create({
     paddingTop: 24,
   },
   subscriptionCard: {
-    backgroundColor: 'white',
+    backgroundColor: '#1f2937',
     borderRadius: 16,
     padding: 20,
     marginBottom: 20,
-    shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 5,
+    borderWidth: 1,
+    borderColor: '#374151',
   },
   cardHeader: {
     flexDirection: 'row',
@@ -286,10 +291,10 @@ const styles = StyleSheet.create({
   cardTitle: {
     fontSize: 18,
     fontWeight: '600',
-    color: '#111827',
+    color: '#f9fafb',
   },
   badge: {
-    backgroundColor: '#EF4444',
+    backgroundColor: '#DC2626',
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 12,
@@ -304,12 +309,12 @@ const styles = StyleSheet.create({
   },
   progressText: {
     fontSize: 14,
-    color: '#6B7280',
+    color: '#9CA3AF',
     marginBottom: 8,
   },
   progressBar: {
     height: 8,
-    backgroundColor: '#F3F4F6',
+    backgroundColor: '#374151',
     borderRadius: 4,
     overflow: 'hidden',
   },
@@ -337,18 +342,12 @@ const styles = StyleSheet.create({
   },
   statCard: {
     flex: 1,
-    backgroundColor: 'white',
+    backgroundColor: '#1f2937',
     borderRadius: 16,
     padding: 20,
     alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 5,
+    borderWidth: 1,
+    borderColor: '#374151',
   },
   statNumber: {
     fontSize: 24,
@@ -358,22 +357,20 @@ const styles = StyleSheet.create({
   },
   statLabel: {
     fontSize: 12,
-    color: '#6B7280',
+    color: '#9CA3AF',
     textAlign: 'center',
+    marginBottom: 8,
+  },
+  statIcon: {
+    fontSize: 16,
   },
   quickActionsCard: {
-    backgroundColor: 'white',
+    backgroundColor: '#1f2937',
     borderRadius: 16,
     padding: 20,
     marginBottom: 20,
-    shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 5,
+    borderWidth: 1,
+    borderColor: '#374151',
   },
   actionButtons: {
     flexDirection: 'row',
@@ -382,7 +379,7 @@ const styles = StyleSheet.create({
   },
   actionButton: {
     flex: 1,
-    backgroundColor: '#F3F4F6',
+    backgroundColor: '#374151',
     paddingVertical: 16,
     paddingHorizontal: 12,
     borderRadius: 12,
@@ -391,20 +388,14 @@ const styles = StyleSheet.create({
   actionButtonText: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#374151',
+    color: '#f9fafb',
   },
   recentPostsCard: {
-    backgroundColor: 'white',
+    backgroundColor: '#1f2937',
     borderRadius: 16,
     padding: 20,
-    shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 5,
+    borderWidth: 1,
+    borderColor: '#374151',
   },
   seeAllText: {
     fontSize: 14,
@@ -418,26 +409,44 @@ const styles = StyleSheet.create({
   emptyStateTitle: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#374151',
+    color: '#f9fafb',
     marginBottom: 8,
   },
   emptyStateText: {
     fontSize: 14,
-    color: '#6B7280',
+    color: '#9CA3AF',
     textAlign: 'center',
+    marginBottom: 20,
+  },
+  createFirstPostButton: {
+    backgroundColor: '#3B82F6',
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 8,
+  },
+  createFirstPostText: {
+    color: 'white',
+    fontSize: 14,
+    fontWeight: '600',
   },
   postItem: {
     flexDirection: 'row',
     paddingVertical: 16,
     borderBottomWidth: 1,
-    borderBottomColor: '#F3F4F6',
+    borderBottomColor: '#374151',
   },
   postContent: {
     flex: 1,
   },
-  postText: {
+  postTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#f9fafb',
+    marginBottom: 4,
+  },
+  postExcerpt: {
     fontSize: 14,
-    color: '#374151',
+    color: '#9CA3AF',
     marginBottom: 8,
     lineHeight: 20,
   },
@@ -446,24 +455,17 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
   },
-  platformTags: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  platformTag: {
-    backgroundColor: '#F3F4F6',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-  },
-  platformTagText: {
-    fontSize: 12,
-    color: '#6B7280',
-    fontWeight: '500',
-  },
   postDate: {
     fontSize: 12,
-    color: '#9CA3AF',
+    color: '#6B7280',
+  },
+  postStats: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  statText: {
+    fontSize: 12,
+    color: '#6B7280',
   },
   statusIndicator: {
     width: 8,

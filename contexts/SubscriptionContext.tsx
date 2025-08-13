@@ -1,6 +1,7 @@
 
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { useAuth } from './AuthContext';
+import { checkUserSubscription, getUserPostCount } from '@/lib/api';
 
 interface SubscriptionContextType {
   isSubscribed: boolean;
@@ -9,6 +10,7 @@ interface SubscriptionContextType {
   canCreatePost: boolean;
   incrementPostCount: () => void;
   resetPostCount: () => void;
+  loading: boolean;
 }
 
 const SubscriptionContext = createContext<SubscriptionContextType>({} as SubscriptionContextType);
@@ -25,28 +27,35 @@ export const SubscriptionProvider: React.FC<{ children: React.ReactNode }> = ({ 
   const { user } = useAuth();
   const [isSubscribed, setIsSubscribed] = useState(false);
   const [postsCount, setPostsCount] = useState(0);
-  const maxPosts = isSubscribed ? 999 : 3; // Unlimited for subscribers, 3 for free users
+  const [loading, setLoading] = useState(true);
+  const maxPosts = isSubscribed ? 999 : 5; // 5 posts for free users, unlimited for subscribers
   const canCreatePost = postsCount < maxPosts;
 
   useEffect(() => {
     if (user) {
-      // Check subscription status from your backend/Stripe
-      // This is a placeholder - implement actual Stripe subscription check
-      checkSubscriptionStatus();
-      loadPostsCount();
+      loadSubscriptionData();
+    } else {
+      setLoading(false);
     }
   }, [user]);
 
-  const checkSubscriptionStatus = async () => {
-    // Implement Stripe subscription check
-    setIsSubscribed(false); // Placeholder
-  };
+  const loadSubscriptionData = async () => {
+    if (!user) return;
+    
+    setLoading(true);
+    try {
+      // Check subscription status
+      const subscriptionResult = await checkUserSubscription(user.id);
+      setIsSubscribed(subscriptionResult.isSubscribed);
 
-  const loadPostsCount = async () => {
-    // Load from AsyncStorage or your database
-    const currentMonth = new Date().getMonth();
-    // Implement logic to track monthly posts
-    setPostsCount(0); // Placeholder
+      // Get current month's post count
+      const postCountResult = await getUserPostCount(user.id);
+      setPostsCount(postCountResult.count);
+    } catch (error) {
+      console.error('Error loading subscription data:', error);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const incrementPostCount = () => {
@@ -64,6 +73,7 @@ export const SubscriptionProvider: React.FC<{ children: React.ReactNode }> = ({ 
     canCreatePost,
     incrementPostCount,
     resetPostCount,
+    loading,
   };
 
   return <SubscriptionContext.Provider value={value}>{children}</SubscriptionContext.Provider>;
