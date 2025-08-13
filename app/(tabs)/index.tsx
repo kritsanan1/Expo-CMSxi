@@ -13,82 +13,146 @@ import { LinearGradient } from 'expo-linear-gradient';
 import * as Animatable from 'react-native-animatable';
 import { useAuth } from '@/contexts/AuthContext';
 import { useSubscription } from '@/contexts/SubscriptionContext';
-import { getUserBlogPosts, BlogPost } from '@/lib/api';
+import { getPostAnalytics, getPlatformMetrics } from '@/lib/api';
 import { router } from 'expo-router';
 
 const { width } = Dimensions.get('window');
 
-export default function HomeScreen() {
+interface DashboardMetrics {
+  totalPosts: number;
+  totalEngagement: number;
+  averageEngagementRate: number;
+  twitterMetrics: {
+    posts: number;
+    engagement: number;
+    engagementRate: number;
+  };
+  linkedinMetrics: {
+    posts: number;
+    engagement: number;
+    engagementRate: number;
+  };
+  topPerformingPosts: Array<{
+    platform: string;
+    content: string;
+    engagement: number;
+  }>;
+}
+
+export default function AnalyticsDashboard() {
   const { user } = useAuth();
-  const { postsCount, maxPosts, isSubscribed } = useSubscription();
-  const [posts, setPosts] = useState<BlogPost[]>([]);
-  const [refreshing, setRefreshing] = useState(false);
-  const [stats, setStats] = useState({
+  const { isSubscribed } = useSubscription();
+  const [metrics, setMetrics] = useState<DashboardMetrics>({
     totalPosts: 0,
-    totalViews: 0,
-    totalLikes: 0,
-    averageViews: 0,
+    totalEngagement: 0,
+    averageEngagementRate: 0,
+    twitterMetrics: { posts: 0, engagement: 0, engagementRate: 0 },
+    linkedinMetrics: { posts: 0, engagement: 0, engagementRate: 0 },
+    topPerformingPosts: []
   });
+  const [refreshing, setRefreshing] = useState(false);
+  const [dataSource, setDataSource] = useState<'live' | 'cached'>('live');
 
   useEffect(() => {
     if (user) {
-      loadBlogPosts();
+      loadAnalytics();
     }
   }, [user]);
 
-  const loadBlogPosts = async () => {
+  const loadAnalytics = async () => {
     if (!user) return;
     
     try {
-      const result = await getUserBlogPosts(user.id);
-      if (result.success && result.data) {
-        const blogPosts = result.data.slice(0, 5); // Show latest 5 posts
-        setPosts(blogPosts);
-        calculateStats(result.data);
+      // Load post analytics
+      const analyticsResult = await getPostAnalytics(user.id);
+      if (analyticsResult.success) {
+        setDataSource(analyticsResult.cached ? 'cached' : 'live');
       }
+
+      // Load platform metrics
+      const [twitterResult, linkedinResult] = await Promise.all([
+        getPlatformMetrics('twitter', user.id),
+        getPlatformMetrics('linkedin', user.id)
+      ]);
+
+      // Process and combine data
+      const processedMetrics = processAnalyticsData(
+        analyticsResult.data || [],
+        twitterResult.data,
+        linkedinResult.data
+      );
+      
+      setMetrics(processedMetrics);
     } catch (error) {
-      console.error('Error loading blog posts:', error);
+      console.error('Error loading analytics:', error);
     }
   };
 
-  const calculateStats = (allPosts: BlogPost[]) => {
-    const totalPosts = allPosts.length;
-    const totalViews = allPosts.reduce((sum, post) => sum + (post.views || 0), 0);
-    const totalLikes = allPosts.reduce((sum, post) => sum + (post.likes || 0), 0);
-    const averageViews = totalPosts > 0 ? Math.round(totalViews / totalPosts) : 0;
+  const processAnalyticsData = (posts: any[], twitterData: any, linkedinData: any): DashboardMetrics => {
+    const totalPosts = posts.length;
+    const totalEngagement = posts.reduce((sum, post) => 
+      sum + (post.metrics?.likes || 0) + (post.metrics?.shares || 0) + (post.metrics?.comments || 0), 0
+    );
+    
+    const averageEngagementRate = posts.length > 0 
+      ? posts.reduce((sum, post) => sum + (post.metrics?.engagement_rate || 0), 0) / posts.length 
+      : 0;
 
-    setStats({
+    const twitterPosts = posts.filter(post => post.platform === 'twitter');
+    const linkedinPosts = posts.filter(post => post.platform === 'linkedin');
+
+    const twitterMetrics = {
+      posts: twitterPosts.length,
+      engagement: twitterPosts.reduce((sum, post) => 
+        sum + (post.metrics?.likes || 0) + (post.metrics?.shares || 0) + (post.metrics?.comments || 0), 0
+      ),
+      engagementRate: twitterData?.averageEngagementRate || 0
+    };
+
+    const linkedinMetrics = {
+      posts: linkedinPosts.length,
+      engagement: linkedinPosts.reduce((sum, post) => 
+        sum + (post.metrics?.likes || 0) + (post.metrics?.shares || 0) + (post.metrics?.comments || 0), 0
+      ),
+      engagementRate: linkedinData?.averageEngagementRate || 0
+    };
+
+    // Get top performing posts
+    const topPerformingPosts = posts
+      .sort((a, b) => (b.metrics?.engagement_rate || 0) - (a.metrics?.engagement_rate || 0))
+      .slice(0, 3)
+      .map(post => ({
+        platform: post.platform,
+        content: post.content.substring(0, 100) + '...',
+        engagement: (post.metrics?.likes || 0) + (post.metrics?.shares || 0) + (post.metrics?.comments || 0)
+      }));
+
+    return {
       totalPosts,
-      totalViews,
-      totalLikes,
-      averageViews,
-    });
+      totalEngagement,
+      averageEngagementRate,
+      twitterMetrics,
+      linkedinMetrics,
+      topPerformingPosts
+    };
   };
 
   const onRefresh = React.useCallback(() => {
     setRefreshing(true);
-    loadBlogPosts();
-    setTimeout(() => setRefreshing(false), 1000);
+    loadAnalytics();
+    setTimeout(() => setRefreshing(false), 1500);
   }, [user]);
+
+  const formatNumber = (num: number) => {
+    if (num >= 1000) return `${(num / 1000).toFixed(1)}k`;
+    return num.toString();
+  };
 
   const getGreeting = () => {
     const hour = new Date().getHours();
     if (hour < 12) return 'Good Morning';
     if (hour < 18) return 'Good Afternoon';
     return 'Good Evening';
-  };
-
-  const formatDate = (dateString: string) => {
-    return new Date(dateString).toLocaleDateString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric'
-    });
-  };
-
-  const truncateContent = (content: string, maxLength: number = 150) => {
-    if (content.length <= maxLength) return content;
-    return content.substring(0, maxLength) + '...';
   };
 
   return (
@@ -100,140 +164,146 @@ export default function HomeScreen() {
       }
     >
       <LinearGradient
-        colors={['#1f2937', '#374151']}
+        colors={['#1E40AF', '#3B82F6']}
         style={styles.header}
       >
         <Animatable.View animation="fadeInUp" duration={800}>
-          <Text style={styles.greeting}>{getGreeting()}</Text>
-          <Text style={styles.userName}>{user?.email?.split('@')[0] || 'Writer'}</Text>
-          <Text style={styles.subtitle}>Ready to share your thoughts with the world?</Text>
+          <View style={styles.headerTop}>
+            <View>
+              <Text style={styles.greeting}>{getGreeting()}</Text>
+              <Text style={styles.userName}>{user?.email?.split('@')[0] || 'Social Manager'}</Text>
+            </View>
+            <View style={styles.dataSourceBadge}>
+              <Text style={styles.dataSourceText}>
+                {dataSource === 'live' ? '🔴 Live' : '📱 Cached'}
+              </Text>
+            </View>
+          </View>
+          <Text style={styles.subtitle}>Your social media performance overview</Text>
         </Animatable.View>
       </LinearGradient>
 
       <View style={styles.content}>
-        {/* Subscription Status */}
-        <Animatable.View animation="fadeInUp" delay={200} style={styles.subscriptionCard}>
-          <View style={styles.cardHeader}>
-            <Text style={styles.cardTitle}>Writing Plan</Text>
-            {!isSubscribed && (
-              <View style={styles.badge}>
-                <Text style={styles.badgeText}>FREE</Text>
-              </View>
-            )}
+        {/* Key Metrics Cards */}
+        <Animatable.View animation="fadeInUp" delay={200} style={styles.metricsContainer}>
+          <View style={styles.metricCard}>
+            <Text style={styles.metricNumber}>{metrics.totalPosts}</Text>
+            <Text style={styles.metricLabel}>Total Posts</Text>
+            <Text style={styles.metricIcon}>📝</Text>
           </View>
-          <View style={styles.progressContainer}>
-            <Text style={styles.progressText}>
-              {postsCount} of {maxPosts} blog posts this month
-            </Text>
-            <View style={styles.progressBar}>
-              <View
-                style={[
-                  styles.progressFill,
-                  { width: `${(postsCount / maxPosts) * 100}%` }
-                ]}
-              />
-            </View>
+          <View style={styles.metricCard}>
+            <Text style={styles.metricNumber}>{formatNumber(metrics.totalEngagement)}</Text>
+            <Text style={styles.metricLabel}>Total Engagement</Text>
+            <Text style={styles.metricIcon}>💬</Text>
           </View>
-          {!isSubscribed && postsCount >= maxPosts && (
-            <TouchableOpacity 
-              style={styles.upgradeButton}
-              onPress={() => router.push('/subscription')}
-            >
-              <Text style={styles.upgradeButtonText}>Upgrade to Pro</Text>
-            </TouchableOpacity>
-          )}
+          <View style={styles.metricCard}>
+            <Text style={styles.metricNumber}>{metrics.averageEngagementRate.toFixed(1)}%</Text>
+            <Text style={styles.metricLabel}>Avg. Rate</Text>
+            <Text style={styles.metricIcon}>📊</Text>
+          </View>
         </Animatable.View>
 
-        {/* Stats Cards */}
-        <Animatable.View animation="fadeInUp" delay={400} style={styles.statsContainer}>
-          <View style={styles.statCard}>
-            <Text style={styles.statNumber}>{stats.totalPosts}</Text>
-            <Text style={styles.statLabel}>Blog Posts</Text>
-            <Text style={styles.statIcon}>📝</Text>
+        {/* Platform Breakdown */}
+        <Animatable.View animation="fadeInUp" delay={400} style={styles.platformCard}>
+          <Text style={styles.cardTitle}>Platform Performance</Text>
+          
+          <View style={styles.platformRow}>
+            <View style={styles.platformInfo}>
+              <Text style={styles.platformName}>🐦 Twitter</Text>
+              <Text style={styles.platformStats}>
+                {metrics.twitterMetrics.posts} posts • {formatNumber(metrics.twitterMetrics.engagement)} engagement
+              </Text>
+            </View>
+            <View style={styles.engagementBadge}>
+              <Text style={styles.engagementText}>{metrics.twitterMetrics.engagementRate.toFixed(1)}%</Text>
+            </View>
           </View>
-          <View style={styles.statCard}>
-            <Text style={styles.statNumber}>{stats.totalViews}</Text>
-            <Text style={styles.statLabel}>Total Views</Text>
-            <Text style={styles.statIcon}>👁️</Text>
-          </View>
-          <View style={styles.statCard}>
-            <Text style={styles.statNumber}>{stats.totalLikes}</Text>
-            <Text style={styles.statLabel}>Total Likes</Text>
-            <Text style={styles.statIcon}>❤️</Text>
+
+          <View style={styles.platformRow}>
+            <View style={styles.platformInfo}>
+              <Text style={styles.platformName}>💼 LinkedIn</Text>
+              <Text style={styles.platformStats}>
+                {metrics.linkedinMetrics.posts} posts • {formatNumber(metrics.linkedinMetrics.engagement)} engagement
+              </Text>
+            </View>
+            <View style={styles.engagementBadge}>
+              <Text style={styles.engagementText}>{metrics.linkedinMetrics.engagementRate.toFixed(1)}%</Text>
+            </View>
           </View>
         </Animatable.View>
 
         {/* Quick Actions */}
-        <Animatable.View animation="fadeInUp" delay={600} style={styles.quickActionsCard}>
+        <Animatable.View animation="fadeInUp" delay={600} style={styles.actionsCard}>
           <Text style={styles.cardTitle}>Quick Actions</Text>
           <View style={styles.actionButtons}>
             <TouchableOpacity 
               style={styles.actionButton}
               onPress={() => router.push('/(tabs)/create')}
             >
-              <Text style={styles.actionButtonText}>✏️ New Post</Text>
+              <Text style={styles.actionButtonText}>🔥 Trending Topics</Text>
             </TouchableOpacity>
             <TouchableOpacity 
               style={styles.actionButton}
               onPress={() => router.push('/(tabs)/analytics')}
             >
-              <Text style={styles.actionButtonText}>📊 Analytics</Text>
+              <Text style={styles.actionButtonText}>📈 Detailed Analytics</Text>
             </TouchableOpacity>
           </View>
         </Animatable.View>
 
-        {/* Recent Posts */}
-        <Animatable.View animation="fadeInUp" delay={800} style={styles.recentPostsCard}>
+        {/* Top Performing Posts */}
+        <Animatable.View animation="fadeInUp" delay={800} style={styles.topPostsCard}>
           <View style={styles.cardHeader}>
-            <Text style={styles.cardTitle}>Recent Posts</Text>
-            <TouchableOpacity>
-              <Text style={styles.seeAllText}>See All</Text>
-            </TouchableOpacity>
+            <Text style={styles.cardTitle}>Top Performing Posts</Text>
+            {!isSubscribed && (
+              <TouchableOpacity style={styles.premiumBadge}>
+                <Text style={styles.premiumText}>PRO</Text>
+              </TouchableOpacity>
+            )}
           </View>
-          {posts.length === 0 ? (
-            <View style={styles.emptyState}>
-              <Text style={styles.emptyStateTitle}>No posts yet</Text>
-              <Text style={styles.emptyStateText}>
-                Start writing your first blog post to share your ideas!
+          
+          {!isSubscribed ? (
+            <View style={styles.premiumPrompt}>
+              <Text style={styles.premiumTitle}>Premium Analytics</Text>
+              <Text style={styles.premiumDescription}>
+                Unlock detailed post performance insights and advanced analytics
               </Text>
-              <TouchableOpacity 
-                style={styles.createFirstPostButton}
-                onPress={() => router.push('/(tabs)/create')}
-              >
-                <Text style={styles.createFirstPostText}>Create Your First Post</Text>
+              <TouchableOpacity style={styles.upgradeButton}>
+                <Text style={styles.upgradeText}>Upgrade to Pro</Text>
               </TouchableOpacity>
             </View>
           ) : (
-            posts.map((post, index) => (
-              <Animatable.View
-                key={post.id}
-                animation="fadeInUp"
-                delay={1000 + index * 100}
-                style={styles.postItem}
-              >
-                <View style={styles.postContent}>
-                  <Text style={styles.postTitle} numberOfLines={1}>
-                    {post.title}
+            <>
+              {metrics.topPerformingPosts.length === 0 ? (
+                <View style={styles.emptyState}>
+                  <Text style={styles.emptyTitle}>No posts yet</Text>
+                  <Text style={styles.emptyDescription}>
+                    Connect your social media accounts to see your top performing content
                   </Text>
-                  <Text style={styles.postExcerpt} numberOfLines={2}>
-                    {post.excerpt || truncateContent(post.content)}
-                  </Text>
-                  <View style={styles.postMeta}>
-                    <Text style={styles.postDate}>
-                      {formatDate(post.created_at)}
+                </View>
+              ) : (
+                metrics.topPerformingPosts.map((post, index) => (
+                  <Animatable.View
+                    key={index}
+                    animation="fadeInUp"
+                    delay={1000 + index * 100}
+                    style={styles.postItem}
+                  >
+                    <Text style={styles.postPlatform}>
+                      {post.platform === 'twitter' ? '🐦 Twitter' : '💼 LinkedIn'}
+                    </Text>
+                    <Text style={styles.postContent} numberOfLines={2}>
+                      {post.content}
                     </Text>
                     <View style={styles.postStats}>
-                      <Text style={styles.statText}>👁️ {post.views}</Text>
-                      <Text style={styles.statText}>❤️ {post.likes}</Text>
+                      <Text style={styles.postEngagement}>
+                        {formatNumber(post.engagement)} engagement
+                      </Text>
                     </View>
-                  </View>
-                </View>
-                <View style={[
-                  styles.statusIndicator,
-                  { backgroundColor: post.published ? '#10B981' : '#F59E0B' }
-                ]} />
-              </Animatable.View>
-            ))
+                  </Animatable.View>
+                ))
+              )}
+            </>
           )}
         </Animatable.View>
       </View>
@@ -244,7 +314,7 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#111827',
+    backgroundColor: '#F8FAFC',
   },
   contentContainer: {
     paddingBottom: 100,
@@ -254,33 +324,162 @@ const styles = StyleSheet.create({
     paddingBottom: 32,
     paddingHorizontal: 24,
   },
+  headerTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 8,
+  },
   greeting: {
     fontSize: 16,
-    color: 'rgba(255, 255, 255, 0.7)',
+    color: 'rgba(255, 255, 255, 0.8)',
     marginBottom: 4,
   },
   userName: {
     fontSize: 28,
     fontWeight: 'bold',
     color: 'white',
-    marginBottom: 8,
+  },
+  dataSourceBadge: {
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+  },
+  dataSourceText: {
+    color: 'white',
+    fontSize: 12,
+    fontWeight: '600',
   },
   subtitle: {
     fontSize: 16,
-    color: 'rgba(255, 255, 255, 0.8)',
+    color: 'rgba(255, 255, 255, 0.9)',
   },
   content: {
     flex: 1,
     paddingHorizontal: 24,
     paddingTop: 24,
   },
-  subscriptionCard: {
-    backgroundColor: '#1f2937',
+  metricsContainer: {
+    flexDirection: 'row',
+    marginBottom: 24,
+    gap: 12,
+  },
+  metricCard: {
+    flex: 1,
+    backgroundColor: 'white',
     borderRadius: 16,
     padding: 20,
-    marginBottom: 20,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  metricNumber: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#1E40AF',
+    marginBottom: 4,
+  },
+  metricLabel: {
+    fontSize: 12,
+    color: '#64748B',
+    textAlign: 'center',
+    marginBottom: 8,
+  },
+  metricIcon: {
+    fontSize: 16,
+  },
+  platformCard: {
+    backgroundColor: 'white',
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 24,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  cardTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#1E293B',
+    marginBottom: 16,
+  },
+  platformRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9',
+  },
+  platformInfo: {
+    flex: 1,
+  },
+  platformName: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#1E293B',
+    marginBottom: 4,
+  },
+  platformStats: {
+    fontSize: 14,
+    color: '#64748B',
+  },
+  engagementBadge: {
+    backgroundColor: '#F0F9FF',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 12,
+  },
+  engagementText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#1E40AF',
+  },
+  actionsCard: {
+    backgroundColor: 'white',
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 24,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  actionButtons: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  actionButton: {
+    flex: 1,
+    backgroundColor: '#F8FAFC',
+    paddingVertical: 16,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    alignItems: 'center',
     borderWidth: 1,
-    borderColor: '#374151',
+    borderColor: '#E2E8F0',
+  },
+  actionButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#1E293B',
+  },
+  topPostsCard: {
+    backgroundColor: 'white',
+    borderRadius: 16,
+    padding: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 4,
   },
   cardHeader: {
     flexDirection: 'row',
@@ -288,190 +487,83 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 16,
   },
-  cardTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#f9fafb',
-  },
-  badge: {
-    backgroundColor: '#DC2626',
+  premiumBadge: {
+    backgroundColor: '#FEF3C7',
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 12,
   },
-  badgeText: {
-    color: 'white',
+  premiumText: {
     fontSize: 12,
     fontWeight: '600',
+    color: '#D97706',
   },
-  progressContainer: {
+  premiumPrompt: {
+    alignItems: 'center',
+    paddingVertical: 24,
+  },
+  premiumTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#1E293B',
+    marginBottom: 8,
+  },
+  premiumDescription: {
+    fontSize: 14,
+    color: '#64748B',
+    textAlign: 'center',
     marginBottom: 16,
   },
-  progressText: {
-    fontSize: 14,
-    color: '#9CA3AF',
-    marginBottom: 8,
-  },
-  progressBar: {
-    height: 8,
-    backgroundColor: '#374151',
-    borderRadius: 4,
-    overflow: 'hidden',
-  },
-  progressFill: {
-    height: '100%',
-    backgroundColor: '#3B82F6',
-    borderRadius: 4,
-  },
   upgradeButton: {
-    backgroundColor: '#3B82F6',
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  upgradeButtonText: {
-    color: 'white',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  statsContainer: {
-    flexDirection: 'row',
-    marginBottom: 20,
-    gap: 12,
-  },
-  statCard: {
-    flex: 1,
-    backgroundColor: '#1f2937',
-    borderRadius: 16,
-    padding: 20,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#374151',
-  },
-  statNumber: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#3B82F6',
-    marginBottom: 4,
-  },
-  statLabel: {
-    fontSize: 12,
-    color: '#9CA3AF',
-    textAlign: 'center',
-    marginBottom: 8,
-  },
-  statIcon: {
-    fontSize: 16,
-  },
-  quickActionsCard: {
-    backgroundColor: '#1f2937',
-    borderRadius: 16,
-    padding: 20,
-    marginBottom: 20,
-    borderWidth: 1,
-    borderColor: '#374151',
-  },
-  actionButtons: {
-    flexDirection: 'row',
-    gap: 12,
-    marginTop: 16,
-  },
-  actionButton: {
-    flex: 1,
-    backgroundColor: '#374151',
-    paddingVertical: 16,
-    paddingHorizontal: 12,
-    borderRadius: 12,
-    alignItems: 'center',
-  },
-  actionButtonText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#f9fafb',
-  },
-  recentPostsCard: {
-    backgroundColor: '#1f2937',
-    borderRadius: 16,
-    padding: 20,
-    borderWidth: 1,
-    borderColor: '#374151',
-  },
-  seeAllText: {
-    fontSize: 14,
-    color: '#3B82F6',
-    fontWeight: '600',
-  },
-  emptyState: {
-    alignItems: 'center',
-    paddingVertical: 32,
-  },
-  emptyStateTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#f9fafb',
-    marginBottom: 8,
-  },
-  emptyStateText: {
-    fontSize: 14,
-    color: '#9CA3AF',
-    textAlign: 'center',
-    marginBottom: 20,
-  },
-  createFirstPostButton: {
-    backgroundColor: '#3B82F6',
+    backgroundColor: '#1E40AF',
     paddingHorizontal: 20,
     paddingVertical: 12,
     borderRadius: 8,
   },
-  createFirstPostText: {
+  upgradeText: {
     color: 'white',
     fontSize: 14,
     fontWeight: '600',
   },
-  postItem: {
-    flexDirection: 'row',
-    paddingVertical: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: '#374151',
+  emptyState: {
+    alignItems: 'center',
+    paddingVertical: 24,
   },
-  postContent: {
-    flex: 1,
-  },
-  postTitle: {
+  emptyTitle: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#f9fafb',
-    marginBottom: 4,
-  },
-  postExcerpt: {
-    fontSize: 14,
-    color: '#9CA3AF',
+    color: '#1E293B',
     marginBottom: 8,
+  },
+  emptyDescription: {
+    fontSize: 14,
+    color: '#64748B',
+    textAlign: 'center',
+  },
+  postItem: {
+    paddingVertical: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9',
+  },
+  postPlatform: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#1E40AF',
+    marginBottom: 8,
+  },
+  postContent: {
+    fontSize: 14,
+    color: '#1E293B',
     lineHeight: 20,
-  },
-  postMeta: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  postDate: {
-    fontSize: 12,
-    color: '#6B7280',
+    marginBottom: 8,
   },
   postStats: {
     flexDirection: 'row',
-    gap: 12,
+    justifyContent: 'space-between',
   },
-  statText: {
+  postEngagement: {
     fontSize: 12,
-    color: '#6B7280',
-  },
-  statusIndicator: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    marginLeft: 12,
-    alignSelf: 'center',
+    color: '#64748B',
+    fontWeight: '600',
   },
 });

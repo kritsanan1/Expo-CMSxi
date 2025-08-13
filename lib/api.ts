@@ -1,60 +1,203 @@
 
 import { supabase } from './supabase';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const GEMINI_API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY;
+const AYRSHARE_API_KEY = process.env.EXPO_PUBLIC_AYRSHARE_API_KEY;
 
-// Blog Post Types
-export interface BlogPost {
+// Social Media Analytics Types
+export interface SocialMediaPost {
   id: string;
-  title: string;
+  platform: 'twitter' | 'linkedin';
   content: string;
-  markdown_content: string;
-  excerpt: string;
-  author_id: string;
-  published: boolean;
-  published_at?: string;
-  views: number;
-  likes: number;
+  post_url: string;
+  published_at: string;
+  metrics: {
+    likes: number;
+    shares: number;
+    comments: number;
+    impressions: number;
+    engagement_rate: number;
+  };
+  user_id: string;
   created_at: string;
   updated_at: string;
 }
 
-export interface BlogDraft {
-  id: string;
-  title: string;
-  content: string;
-  markdown_content: string;
-  author_id?: string;
-  created_at: string;
-  updated_at: string;
+export interface TrendingTopic {
+  topic: string;
+  volume: number;
+  category: string;
+  suggested_content: string;
+  hashtags: string[];
 }
 
-// Gemini AI Integration for Blog Content
-export const generateBlogContent = async (topic: string, type: 'idea' | 'outline' | 'content' = 'content') => {
+export interface AnalyticsSummary {
+  totalPosts: number;
+  totalEngagement: number;
+  averageEngagementRate: number;
+  topPerformingPost: SocialMediaPost | null;
+  platformBreakdown: {
+    twitter: { posts: number; engagement: number };
+    linkedin: { posts: number; engagement: number };
+  };
+  weeklyTrends: Array<{
+    week: string;
+    posts: number;
+    engagement: number;
+  }>;
+}
+
+// Ayrshare API Integration
+export const getPostAnalytics = async (userId: string) => {
   try {
-    let prompt = '';
+    const response = await fetch('https://app.ayrshare.com/api/analytics/posts', {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${AYRSHARE_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+    });
+
+    const data = await response.json();
     
-    switch (type) {
-      case 'idea':
-        prompt = `Generate 5 creative blog post ideas related to "${topic}". Format as a simple list with engaging titles.`;
-        break;
-      case 'outline':
-        prompt = `Create a detailed blog post outline for the topic "${topic}". Include:
-        - Compelling headline
-        - Introduction hook
-        - 3-5 main sections with subsections
-        - Conclusion with call-to-action`;
-        break;
-      case 'content':
-        prompt = `Write a comprehensive blog post about "${topic}". Include:
-        - Engaging title
-        - Compelling introduction
-        - Well-structured body with headers
-        - Practical examples or tips
-        - Strong conclusion
-        Format in markdown with proper headers and formatting.`;
-        break;
+    if (data.success && data.posts) {
+      // Cache the data locally
+      await AsyncStorage.setItem(`analytics_${userId}`, JSON.stringify(data.posts));
+      return { success: true, data: data.posts };
     }
+    
+    throw new Error('Failed to fetch analytics');
+  } catch (error) {
+    console.error('Ayrshare API Error:', error);
+    
+    // Try to get cached data
+    try {
+      const cachedData = await AsyncStorage.getItem(`analytics_${userId}`);
+      if (cachedData) {
+        return { success: true, data: JSON.parse(cachedData), cached: true };
+      }
+    } catch (cacheError) {
+      console.error('Cache error:', cacheError);
+    }
+    
+    return { success: false, data: getMockAnalyticsData() };
+  }
+};
+
+export const getPlatformMetrics = async (platform: 'twitter' | 'linkedin', userId: string) => {
+  try {
+    const response = await fetch(`https://app.ayrshare.com/api/analytics/platforms/${platform}`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${AYRSHARE_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+    });
+
+    const data = await response.json();
+    
+    if (data.success) {
+      // Cache platform-specific data
+      await AsyncStorage.setItem(`${platform}_metrics_${userId}`, JSON.stringify(data));
+      return { success: true, data: data };
+    }
+    
+    throw new Error(`Failed to fetch ${platform} metrics`);
+  } catch (error) {
+    console.error(`${platform} metrics error:`, error);
+    
+    // Try cached data
+    try {
+      const cachedData = await AsyncStorage.getItem(`${platform}_metrics_${userId}`);
+      if (cachedData) {
+        return { success: true, data: JSON.parse(cachedData), cached: true };
+      }
+    } catch (cacheError) {
+      console.error('Cache error:', cacheError);
+    }
+    
+    return { success: false, data: getMockPlatformData(platform) };
+  }
+};
+
+// Gemini AI Integration for Trending Topics
+export const getTrendingTopics = async (industry?: string) => {
+  try {
+    const prompt = `Generate 10 trending topics for social media content in ${industry || 'general business'} for ${new Date().getFullYear()}. 
+    For each topic, provide:
+    - Topic name
+    - Estimated search volume/interest level (1-100)
+    - Category
+    - A brief content suggestion
+    - 3-5 relevant hashtags
+    
+    Format as JSON array with objects containing: topic, volume, category, suggested_content, hashtags.`;
+
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${GEMINI_API_KEY}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        contents: [{
+          parts: [{
+            text: prompt
+          }]
+        }]
+      })
+    });
+
+    const data = await response.json();
+    
+    if (data.candidates && data.candidates.length > 0) {
+      const content = data.candidates[0].content.parts[0].text;
+      // Try to parse JSON from the response
+      try {
+        const jsonMatch = content.match(/\[[\s\S]*\]/);
+        if (jsonMatch) {
+          const trends = JSON.parse(jsonMatch[0]);
+          // Cache trending topics
+          await AsyncStorage.setItem('trending_topics', JSON.stringify(trends));
+          return { success: true, data: trends };
+        }
+      } catch (parseError) {
+        console.error('JSON parse error:', parseError);
+      }
+    }
+    
+    throw new Error('No trends generated');
+  } catch (error) {
+    console.error('Gemini API Error:', error);
+    
+    // Try cached data
+    try {
+      const cachedData = await AsyncStorage.getItem('trending_topics');
+      if (cachedData) {
+        return { success: true, data: JSON.parse(cachedData), cached: true };
+      }
+    } catch (cacheError) {
+      console.error('Cache error:', cacheError);
+    }
+    
+    return { success: false, data: getMockTrendingTopics() };
+  }
+};
+
+export const generateContentIdeas = async (topic: string, platform: 'twitter' | 'linkedin') => {
+  try {
+    const platformSpecs = platform === 'twitter' 
+      ? 'Twitter (280 characters, engaging, hashtag-friendly)'
+      : 'LinkedIn (professional, thought leadership, longer form)';
+
+    const prompt = `Generate 5 ${platform} post ideas about "${topic}" optimized for ${platformSpecs}.
+    For each idea, provide:
+    - Post content/copy
+    - Optimal posting time
+    - Relevant hashtags
+    - Expected engagement prediction
+    
+    Format as JSON array.`;
 
     const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${GEMINI_API_KEY}`, {
       method: 'POST',
@@ -81,192 +224,127 @@ export const generateBlogContent = async (topic: string, type: 'idea' | 'outline
     
     throw new Error('No content generated');
   } catch (error) {
-    console.error('Gemini API Error:', error);
+    console.error('Content generation error:', error);
     return {
       success: false,
-      content: getMockBlogContent(topic, type)
+      content: getMockContentIdeas(topic, platform)
     };
   }
 };
 
-const getMockBlogContent = (topic: string, type: string) => {
-  const mockContent = {
-    idea: `# Blog Ideas for "${topic}"
-
-1. The Ultimate Guide to ${topic}: Everything You Need to Know
-2. 10 Common Mistakes People Make with ${topic}
-3. How ${topic} Changed My Life: A Personal Journey
-4. The Future of ${topic}: Trends to Watch in 2025
-5. ${topic} for Beginners: A Step-by-Step Approach`,
-    
-    outline: `# ${topic}: A Comprehensive Guide
-
-## Introduction
-- Hook: Interesting statistic or question about ${topic}
-- Why this matters to readers
-- What they'll learn from this post
-
-## Main Sections
-### 1. Understanding ${topic}
-- Definition and key concepts
-- Why it's important
-
-### 2. Getting Started with ${topic}
-- Essential steps
-- Common pitfalls to avoid
-
-### 3. Advanced Strategies
-- Pro tips and techniques
-- Real-world examples
-
-### 4. Tools and Resources
-- Recommended tools
-- Further reading
-
-## Conclusion
-- Recap of key points
-- Call-to-action for readers`,
-
-    content: `# Mastering ${topic}: Your Complete Guide
-
-## Introduction
-
-In today's fast-paced world, understanding ${topic} has become more important than ever. Whether you're just starting out or looking to refine your approach, this comprehensive guide will provide you with the insights and strategies you need.
-
-## What is ${topic}?
-
-${topic} is a multifaceted concept that impacts many aspects of our daily lives. At its core, it represents the intersection of innovation, strategy, and practical application.
-
-## Key Benefits
-
-- **Improved Efficiency**: Streamline your processes
-- **Better Results**: Achieve your goals more effectively
-- **Future-Proofing**: Stay ahead of the curve
-
-## Getting Started
-
-### Step 1: Foundation Building
-Start with understanding the fundamentals. This creates a solid base for everything that follows.
-
-### Step 2: Practical Application
-Begin implementing what you've learned in small, manageable steps.
-
-### Step 3: Continuous Improvement
-Regularly assess and refine your approach based on results and feedback.
-
-## Best Practices
-
-1. **Stay Consistent**: Regular practice leads to mastery
-2. **Seek Feedback**: Learn from others' experiences
-3. **Adapt and Evolve**: Be flexible in your approach
-
-## Conclusion
-
-Mastering ${topic} is a journey, not a destination. By following the strategies outlined in this guide, you'll be well on your way to achieving your goals. Remember, success comes to those who are willing to put in the effort and stay committed to continuous learning.
-
-*What's your experience with ${topic}? Share your thoughts in the comments below!*`
-  };
-  
-  return mockContent[type as keyof typeof mockContent] || mockContent.content;
-};
-
-// Supabase Blog Post Operations
-export const createBlogPost = async (post: Omit<BlogPost, 'id' | 'created_at' | 'updated_at' | 'views' | 'likes'>) => {
-  try {
-    const { data, error } = await supabase
-      .from('blog_posts')
-      .insert([{
-        ...post,
-        views: 0,
-        likes: 0
-      }])
-      .select()
-      .single();
-
-    if (error) throw error;
-    return { success: true, data };
-  } catch (error) {
-    console.error('Error creating blog post:', error);
-    return { success: false, error: error.message };
+// Mock data for development/fallback
+const getMockAnalyticsData = () => [
+  {
+    id: '1',
+    platform: 'twitter',
+    content: 'Just launched our new analytics dashboard! 🚀 #analytics #socialmedia',
+    post_url: 'https://twitter.com/user/status/1234567890',
+    published_at: '2024-01-15T10:00:00Z',
+    metrics: { likes: 45, shares: 12, comments: 8, impressions: 1250, engagement_rate: 5.2 }
+  },
+  {
+    id: '2',
+    platform: 'linkedin',
+    content: 'Insights on the future of social media marketing...',
+    post_url: 'https://linkedin.com/posts/user-post-123',
+    published_at: '2024-01-14T14:30:00Z',
+    metrics: { likes: 78, shares: 25, comments: 15, impressions: 2100, engagement_rate: 5.6 }
   }
+];
+
+const getMockPlatformData = (platform: string) => ({
+  platform,
+  totalPosts: platform === 'twitter' ? 45 : 23,
+  totalEngagement: platform === 'twitter' ? 1250 : 890,
+  averageEngagementRate: platform === 'twitter' ? 4.8 : 6.2,
+  followersGrowth: platform === 'twitter' ? 12 : 8
+});
+
+const getMockTrendingTopics = (): TrendingTopic[] => [
+  {
+    topic: 'AI in Business 2024',
+    volume: 89,
+    category: 'Technology',
+    suggested_content: 'Share insights on how AI is transforming business operations and customer experiences.',
+    hashtags: ['#AI', '#Business2024', '#Innovation', '#Technology', '#DigitalTransformation']
+  },
+  {
+    topic: 'Remote Work Best Practices',
+    volume: 76,
+    category: 'Workplace',
+    suggested_content: 'Tips for maintaining productivity and team culture in remote work environments.',
+    hashtags: ['#RemoteWork', '#Productivity', '#WorkFromHome', '#TeamCulture', '#WorkLifeBalance']
+  },
+  {
+    topic: 'Sustainable Business Practices',
+    volume: 68,
+    category: 'Sustainability',
+    suggested_content: 'How companies are implementing eco-friendly practices and their impact on success.',
+    hashtags: ['#Sustainability', '#GreenBusiness', '#ESG', '#ClimateAction', '#CorporateResponsibility']
+  }
+];
+
+const getMockContentIdeas = (topic: string, platform: string) => {
+  return `Here are 5 ${platform} content ideas for "${topic}":
+
+1. **Question Post**: "What's your experience with ${topic}? Share your insights! 🤔"
+   - Best time: 9 AM on weekdays
+   - Hashtags: #${topic.replace(/\s+/g, '')} #Discussion #Community
+   - Expected engagement: High
+
+2. **Tip/Advice**: "Pro tip: The key to mastering ${topic} is..."
+   - Best time: 12 PM lunch break
+   - Hashtags: #Tips #${topic.replace(/\s+/g, '')} #ProTip
+   - Expected engagement: Medium-High
+
+3. **Behind the Scenes**: "Here's how we approach ${topic} at our company..."
+   - Best time: 2 PM on Tuesday/Wednesday
+   - Hashtags: #BehindTheScenes #${topic.replace(/\s+/g, '')} #WorkCulture
+   - Expected engagement: Medium
+
+4. **Trend Analysis**: "The future of ${topic}: What to expect in 2024..."
+   - Best time: 8 AM on Monday
+   - Hashtags: #Trends2024 #${topic.replace(/\s+/g, '')} #FutureTech
+   - Expected engagement: High
+
+5. **User Generated Content**: "Tag someone who's great at ${topic}! 👇"
+   - Best time: 4 PM on Friday
+   - Hashtags: #Community #${topic.replace(/\s+/g, '')} #Networking
+   - Expected engagement: Very High`;
 };
 
-export const updateBlogPost = async (id: string, updates: Partial<BlogPost>) => {
+// Supabase Operations for Caching and User Preferences
+export const saveAnalyticsCache = async (userId: string, data: any) => {
   try {
-    const { data, error } = await supabase
-      .from('blog_posts')
-      .update({
-        ...updates,
+    const { error } = await supabase
+      .from('analytics_cache')
+      .upsert({
+        user_id: userId,
+        data: data,
         updated_at: new Date().toISOString()
-      })
-      .eq('id', id)
-      .select()
-      .single();
+      });
 
-    if (error) throw error;
-    return { success: true, data };
-  } catch (error) {
-    console.error('Error updating blog post:', error);
-    return { success: false, error: error.message };
-  }
-};
-
-export const getUserBlogPosts = async (userId: string, published?: boolean) => {
-  try {
-    let query = supabase
-      .from('blog_posts')
-      .select('*')
-      .eq('author_id', userId)
-      .order('created_at', { ascending: false });
-
-    if (published !== undefined) {
-      query = query.eq('published', published);
-    }
-
-    const { data, error } = await query;
-    if (error) throw error;
-    return { success: true, data };
-  } catch (error) {
-    console.error('Error fetching blog posts:', error);
-    return { success: false, error: error.message };
-  }
-};
-
-export const incrementPostViews = async (postId: string) => {
-  try {
-    const { error } = await supabase.rpc('increment_post_views', { post_id: postId });
     if (error) throw error;
     return { success: true };
   } catch (error) {
-    console.error('Error incrementing views:', error);
+    console.error('Error saving analytics cache:', error);
     return { success: false };
   }
 };
 
-export const togglePostLike = async (postId: string, userId: string) => {
+export const getUserAnalyticsCache = async (userId: string) => {
   try {
-    // Check if user already liked the post
-    const { data: existingLike } = await supabase
-      .from('post_likes')
-      .select('id')
-      .eq('post_id', postId)
+    const { data, error } = await supabase
+      .from('analytics_cache')
+      .select('*')
       .eq('user_id', userId)
       .single();
 
-    if (existingLike) {
-      // Unlike
-      await supabase.from('post_likes').delete().eq('id', existingLike.id);
-      await supabase.rpc('decrement_post_likes', { post_id: postId });
-    } else {
-      // Like
-      await supabase.from('post_likes').insert({ post_id: postId, user_id: userId });
-      await supabase.rpc('increment_post_likes', { post_id: postId });
-    }
-
-    return { success: true, liked: !existingLike };
+    if (error && error.code !== 'PGRST116') throw error;
+    return { success: true, data };
   } catch (error) {
-    console.error('Error toggling like:', error);
-    return { success: false };
+    console.error('Error getting analytics cache:', error);
+    return { success: false, data: null };
   }
 };
 
@@ -289,24 +367,5 @@ export const checkUserSubscription = async (userId: string) => {
   } catch (error) {
     console.error('Error checking subscription:', error);
     return { isSubscribed: false };
-  }
-};
-
-export const getUserPostCount = async (userId: string) => {
-  try {
-    const currentMonth = new Date();
-    const startOfMonth = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), 1);
-    
-    const { count, error } = await supabase
-      .from('blog_posts')
-      .select('*', { count: 'exact', head: true })
-      .eq('author_id', userId)
-      .gte('created_at', startOfMonth.toISOString());
-
-    if (error) throw error;
-    return { success: true, count: count || 0 };
-  } catch (error) {
-    console.error('Error getting post count:', error);
-    return { success: false, count: 0 };
   }
 };

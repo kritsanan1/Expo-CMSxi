@@ -1,441 +1,322 @@
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
-  TextInput,
   TouchableOpacity,
+  TextInput,
   Alert,
-  ActivityIndicator,
   Dimensions,
-  Modal,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Animatable from 'react-native-animatable';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useSubscription } from '@/contexts/SubscriptionContext';
 import { useAuth } from '@/contexts/AuthContext';
-import { generateBlogContent, createBlogPost, BlogDraft } from '@/lib/api';
-import { router } from 'expo-router';
+import { useSubscription } from '@/contexts/SubscriptionContext';
+import { getTrendingTopics, generateContentIdeas, TrendingTopic } from '@/lib/api';
 
 const { width } = Dimensions.get('window');
 
-export default function CreateScreen() {
+export default function TrendingTopicsScreen() {
   const { user } = useAuth();
-  const { canCreatePost, postsCount, maxPosts, incrementPostCount } = useSubscription();
-  
-  const [title, setTitle] = useState('');
-  const [content, setContent] = useState('');
-  const [excerpt, setExcerpt] = useState('');
+  const { isSubscribed } = useSubscription();
+  const [trendingTopics, setTrendingTopics] = useState<TrendingTopic[]>([]);
+  const [selectedTopic, setSelectedTopic] = useState<TrendingTopic | null>(null);
+  const [contentIdeas, setContentIdeas] = useState<string>('');
+  const [selectedPlatform, setSelectedPlatform] = useState<'twitter' | 'linkedin'>('twitter');
+  const [customTopic, setCustomTopic] = useState('');
   const [loading, setLoading] = useState(false);
-  const [currentDraft, setCurrentDraft] = useState<BlogDraft | null>(null);
-  const [aiModalVisible, setAiModalVisible] = useState(false);
-  const [aiTopic, setAiTopic] = useState('');
-  const [aiType, setAiType] = useState<'idea' | 'outline' | 'content'>('content');
-  const [previewMode, setPreviewMode] = useState(false);
+  const [industry, setIndustry] = useState('general business');
   
-  const titleInputRef = useRef<TextInput>(null);
-  const contentInputRef = useRef<TextInput>(null);
+  const customTopicRef = useRef<TextInput>(null);
 
   useEffect(() => {
-    loadDraft();
-  }, []);
+    loadTrendingTopics();
+  }, [industry]);
 
-  const loadDraft = async () => {
-    try {
-      const savedDraft = await AsyncStorage.getItem('currentBlogDraft');
-      if (savedDraft) {
-        const draft: BlogDraft = JSON.parse(savedDraft);
-        setCurrentDraft(draft);
-        setTitle(draft.title);
-        setContent(draft.markdown_content);
-      }
-    } catch (error) {
-      console.error('Error loading draft:', error);
-    }
-  };
-
-  const saveDraft = async () => {
-    try {
-      const draft: BlogDraft = {
-        id: currentDraft?.id || Date.now().toString(),
-        title,
-        content: stripMarkdown(content),
-        markdown_content: content,
-        author_id: user?.id,
-        created_at: currentDraft?.created_at || new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      };
-
-      await AsyncStorage.setItem('currentBlogDraft', JSON.stringify(draft));
-      setCurrentDraft(draft);
-      
-      // Save to drafts list
-      const savedDrafts = await AsyncStorage.getItem('blogDrafts');
-      let drafts: BlogDraft[] = savedDrafts ? JSON.parse(savedDrafts) : [];
-      const existingIndex = drafts.findIndex(d => d.id === draft.id);
-      
-      if (existingIndex >= 0) {
-        drafts[existingIndex] = draft;
-      } else {
-        drafts.unshift(draft);
-      }
-
-      await AsyncStorage.setItem('blogDrafts', JSON.stringify(drafts));
-      Alert.alert('Success', 'Draft saved successfully!');
-    } catch (error) {
-      console.error('Error saving draft:', error);
-      Alert.alert('Error', 'Failed to save draft');
-    }
-  };
-
-  const generateWithAI = async () => {
-    if (!aiTopic.trim()) {
-      Alert.alert('Error', 'Please enter a topic for AI generation');
-      return;
-    }
-
+  const loadTrendingTopics = async () => {
     setLoading(true);
     try {
-      const result = await generateBlogContent(aiTopic, aiType);
-      
+      const result = await getTrendingTopics(industry);
       if (result.success) {
-        if (aiType === 'content') {
-          // Extract title and content from generated markdown
-          const lines = result.content.split('\n');
-          const titleLine = lines.find(line => line.startsWith('# '));
-          if (titleLine) {
-            setTitle(titleLine.substring(2));
-            setContent(result.content);
-          } else {
-            setContent(result.content);
-          }
-        } else {
-          setContent(content + '\n\n' + result.content);
-        }
-        setAiModalVisible(false);
-        setAiTopic('');
-      } else {
-        Alert.alert('Error', 'Failed to generate content');
+        setTrendingTopics(result.data);
       }
     } catch (error) {
-      Alert.alert('Error', 'Failed to generate content');
+      console.error('Error loading trending topics:', error);
     } finally {
       setLoading(false);
     }
   };
 
-  const publishPost = async () => {
-    if (!canCreatePost) {
+  const handleTopicSelect = async (topic: TrendingTopic) => {
+    if (!isSubscribed && trendingTopics.indexOf(topic) >= 3) {
       Alert.alert(
-        'Limit Reached',
-        `You've reached your limit of ${maxPosts} posts this month. Upgrade to Pro for unlimited posts.`,
+        'Premium Feature',
+        'Upgrade to Pro to access all trending topics and content suggestions.',
         [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Upgrade', onPress: () => router.push('/subscription') },
+          { text: 'Later', style: 'cancel' },
+          { text: 'Upgrade', onPress: () => {} }
         ]
       );
       return;
     }
 
-    if (!title.trim()) {
-      Alert.alert('Error', 'Please enter a title');
-      return;
-    }
-
-    if (!content.trim()) {
-      Alert.alert('Error', 'Please enter some content');
-      return;
-    }
-
-    if (!user) {
-      Alert.alert('Error', 'You must be logged in to publish');
-      return;
-    }
-
+    setSelectedTopic(topic);
     setLoading(true);
+    
     try {
-      const postData = {
-        title: title.trim(),
-        content: stripMarkdown(content),
-        markdown_content: content,
-        excerpt: excerpt.trim() || generateExcerpt(content),
-        author_id: user.id,
-        published: true,
-        published_at: new Date().toISOString(),
-      };
-
-      const result = await createBlogPost(postData);
-      
+      const result = await generateContentIdeas(topic.topic, selectedPlatform);
       if (result.success) {
-        // Clear draft
-        await AsyncStorage.removeItem('currentBlogDraft');
-        incrementPostCount();
-        
-        Alert.alert('Success', 'Blog post published successfully!', [
-          { text: 'OK', onPress: () => router.push('/(tabs)/') }
-        ]);
-        
-        // Reset form
-        setTitle('');
-        setContent('');
-        setExcerpt('');
-        setCurrentDraft(null);
+        setContentIdeas(result.content);
       } else {
-        Alert.alert('Error', result.error || 'Failed to publish post');
+        setContentIdeas('Failed to generate content ideas. Please try again.');
       }
     } catch (error) {
-      Alert.alert('Error', 'Failed to publish post');
+      console.error('Error generating content ideas:', error);
+      setContentIdeas('Error generating content ideas.');
     } finally {
       setLoading(false);
     }
   };
 
-  const stripMarkdown = (markdown: string): string => {
-    return markdown
-      .replace(/^#+\s+/gm, '') // Remove headers
-      .replace(/\*\*(.*?)\*\*/g, '$1') // Remove bold
-      .replace(/\*(.*?)\*/g, '$1') // Remove italic
-      .replace(/\[(.*?)\]\(.*?\)/g, '$1') // Remove links
-      .replace(/`(.*?)`/g, '$1') // Remove inline code
-      .replace(/```[\s\S]*?```/g, '') // Remove code blocks
-      .trim();
-  };
-
-  const generateExcerpt = (content: string): string => {
-    const plainText = stripMarkdown(content);
-    return plainText.length > 200 ? plainText.substring(0, 200) + '...' : plainText;
-  };
-
-  const renderMarkdownPreview = (markdown: string) => {
-    // Basic markdown preview (in a real app, you'd use a proper markdown renderer)
-    const lines = markdown.split('\n');
-    return lines.map((line, index) => {
-      if (line.startsWith('# ')) {
-        return <Text key={index} style={styles.previewH1}>{line.substring(2)}</Text>;
-      } else if (line.startsWith('## ')) {
-        return <Text key={index} style={styles.previewH2}>{line.substring(3)}</Text>;
-      } else if (line.startsWith('### ')) {
-        return <Text key={index} style={styles.previewH3}>{line.substring(4)}</Text>;
-      } else if (line.trim() === '') {
-        return <View key={index} style={styles.previewSpacing} />;
-      } else {
-        return <Text key={index} style={styles.previewText}>{line}</Text>;
+  const handleCustomTopicSubmit = async () => {
+    if (!customTopic.trim()) return;
+    
+    const customTopicData: TrendingTopic = {
+      topic: customTopic,
+      volume: 0,
+      category: 'Custom',
+      suggested_content: '',
+      hashtags: []
+    };
+    
+    setSelectedTopic(customTopicData);
+    setLoading(true);
+    
+    try {
+      const result = await generateContentIdeas(customTopic, selectedPlatform);
+      if (result.success) {
+        setContentIdeas(result.content);
       }
-    });
+    } catch (error) {
+      console.error('Error generating custom content:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const industries = [
+    'general business',
+    'technology',
+    'marketing',
+    'healthcare',
+    'finance',
+    'education',
+    'retail',
+    'real estate'
+  ];
+
+  const getVolumeColor = (volume: number) => {
+    if (volume >= 80) return '#EF4444'; // High
+    if (volume >= 60) return '#F59E0B'; // Medium-High
+    if (volume >= 40) return '#10B981'; // Medium
+    return '#6B7280'; // Low
   };
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.contentContainer}>
       <LinearGradient
-        colors={['#1f2937', '#374151']}
+        colors={['#1E40AF', '#3B82F6']}
         style={styles.header}
       >
         <Animatable.View animation="fadeInUp" duration={800}>
-          <Text style={styles.headerTitle}>Write Blog Post</Text>
+          <Text style={styles.headerTitle}>Trending Topics</Text>
           <Text style={styles.headerSubtitle}>
-            {postsCount}/{maxPosts} posts used this month
+            Discover what's trending and get AI-powered content ideas
           </Text>
         </Animatable.View>
       </LinearGradient>
 
       <View style={styles.content}>
-        {/* Title Input */}
-        <Animatable.View animation="fadeInUp" delay={200} style={styles.inputCard}>
-          <Text style={styles.inputLabel}>Title</Text>
-          <TextInput
-            ref={titleInputRef}
-            style={styles.titleInput}
-            placeholder="Enter your blog post title..."
-            placeholderTextColor="#6B7280"
-            value={title}
-            onChangeText={setTitle}
-          />
-        </Animatable.View>
-
-        {/* Content Editor */}
-        <Animatable.View animation="fadeInUp" delay={400} style={styles.editorCard}>
-          <View style={styles.editorHeader}>
-            <Text style={styles.inputLabel}>Content (Markdown)</Text>
-            <View style={styles.editorControls}>
+        {/* Industry Selection */}
+        <Animatable.View animation="fadeInUp" delay={200} style={styles.industryCard}>
+          <Text style={styles.sectionTitle}>Industry Focus</Text>
+          <ScrollView 
+            horizontal 
+            showsHorizontalScrollIndicator={false}
+            style={styles.industryScroll}
+          >
+            {industries.map((ind) => (
               <TouchableOpacity
-                style={[styles.modeButton, !previewMode && styles.modeButtonActive]}
-                onPress={() => setPreviewMode(false)}
+                key={ind}
+                style={[
+                  styles.industryChip,
+                  industry === ind && styles.industryChipActive
+                ]}
+                onPress={() => setIndustry(ind)}
               >
-                <Text style={[styles.modeButtonText, !previewMode && styles.modeButtonTextActive]}>
-                  Edit
+                <Text style={[
+                  styles.industryChipText,
+                  industry === ind && styles.industryChipTextActive
+                ]}>
+                  {ind.charAt(0).toUpperCase() + ind.slice(1)}
                 </Text>
               </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.modeButton, previewMode && styles.modeButtonActive]}
-                onPress={() => setPreviewMode(true)}
-              >
-                <Text style={[styles.modeButtonText, previewMode && styles.modeButtonTextActive]}>
-                  Preview
-                </Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          {previewMode ? (
-            <ScrollView style={styles.previewContainer}>
-              {renderMarkdownPreview(content)}
-            </ScrollView>
-          ) : (
-            <TextInput
-              ref={contentInputRef}
-              style={styles.contentEditor}
-              placeholder="Start writing your blog post in markdown...
-
-# Main Heading
-## Subheading
-**Bold text**
-*Italic text*
-- Bullet point
-1. Numbered list
-
-[Link text](https://example.com)"
-              placeholderTextColor="#6B7280"
-              value={content}
-              onChangeText={setContent}
-              multiline
-              textAlignVertical="top"
-            />
-          )}
-
-          <View style={styles.editorFooter}>
-            <Text style={styles.characterCount}>
-              {content.length} characters
-            </Text>
-            <TouchableOpacity
-              style={styles.aiButton}
-              onPress={() => setAiModalVisible(true)}
-              disabled={loading}
-            >
-              {loading ? (
-                <ActivityIndicator size="small" color="#3B82F6" />
-              ) : (
-                <Text style={styles.aiButtonText}>✨ AI Assist</Text>
-              )}
-            </TouchableOpacity>
-          </View>
+            ))}
+          </ScrollView>
         </Animatable.View>
 
-        {/* Excerpt Input */}
-        <Animatable.View animation="fadeInUp" delay={600} style={styles.inputCard}>
-          <Text style={styles.inputLabel}>Excerpt (Optional)</Text>
-          <TextInput
-            style={styles.excerptInput}
-            placeholder="Brief description of your post..."
-            placeholderTextColor="#6B7280"
-            value={excerpt}
-            onChangeText={setExcerpt}
-            multiline
-            textAlignVertical="top"
-          />
-        </Animatable.View>
-
-        {/* Action Buttons */}
-        <Animatable.View animation="fadeInUp" delay={800} style={styles.actionsCard}>
-          <View style={styles.actionButtons}>
-            <TouchableOpacity
-              style={styles.draftButton}
-              onPress={saveDraft}
-              disabled={loading}
-            >
-              <Text style={styles.draftButtonText}>💾 Save Draft</Text>
-            </TouchableOpacity>
-            
+        {/* Platform Selection */}
+        <Animatable.View animation="fadeInUp" delay={300} style={styles.platformCard}>
+          <Text style={styles.sectionTitle}>Target Platform</Text>
+          <View style={styles.platformButtons}>
             <TouchableOpacity
               style={[
-                styles.publishButton,
-                (!canCreatePost || loading) && styles.publishButtonDisabled
+                styles.platformButton,
+                selectedPlatform === 'twitter' && styles.platformButtonActive
               ]}
-              onPress={publishPost}
-              disabled={!canCreatePost || loading}
+              onPress={() => setSelectedPlatform('twitter')}
             >
-              {loading ? (
-                <ActivityIndicator size="small" color="white" />
-              ) : (
-                <Text style={styles.publishButtonText}>🚀 Publish</Text>
-              )}
+              <Text style={styles.platformEmoji}>🐦</Text>
+              <Text style={[
+                styles.platformButtonText,
+                selectedPlatform === 'twitter' && styles.platformButtonTextActive
+              ]}>
+                Twitter
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.platformButton,
+                selectedPlatform === 'linkedin' && styles.platformButtonActive
+              ]}
+              onPress={() => setSelectedPlatform('linkedin')}
+            >
+              <Text style={styles.platformEmoji}>💼</Text>
+              <Text style={[
+                styles.platformButtonText,
+                selectedPlatform === 'linkedin' && styles.platformButtonTextActive
+              ]}>
+                LinkedIn
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </Animatable.View>
+
+        {/* Custom Topic Input */}
+        <Animatable.View animation="fadeInUp" delay={400} style={styles.customTopicCard}>
+          <Text style={styles.sectionTitle}>Custom Topic</Text>
+          <View style={styles.customTopicRow}>
+            <TextInput
+              ref={customTopicRef}
+              style={styles.customTopicInput}
+              placeholder="Enter your own topic..."
+              placeholderTextColor="#94A3B8"
+              value={customTopic}
+              onChangeText={setCustomTopic}
+              onSubmitEditing={handleCustomTopicSubmit}
+            />
+            <TouchableOpacity
+              style={styles.customTopicButton}
+              onPress={handleCustomTopicSubmit}
+              disabled={!customTopic.trim() || loading}
+            >
+              <Text style={styles.customTopicButtonText}>✨ Generate</Text>
+            </TouchableOpacity>
+          </View>
+        </Animatable.View>
+
+        {/* Trending Topics */}
+        <Animatable.View animation="fadeInUp" delay={500} style={styles.topicsCard}>
+          <View style={styles.topicsHeader}>
+            <Text style={styles.sectionTitle}>🔥 Trending Now</Text>
+            <TouchableOpacity 
+              onPress={loadTrendingTopics}
+              disabled={loading}
+            >
+              <Text style={styles.refreshText}>Refresh</Text>
             </TouchableOpacity>
           </View>
           
-          {!canCreatePost && (
-            <Text style={styles.limitWarning}>
-              You've reached your monthly limit. Upgrade to Pro for unlimited posts.
-            </Text>
+          {loading && !selectedTopic ? (
+            <View style={styles.loadingState}>
+              <Text style={styles.loadingText}>Loading trending topics...</Text>
+            </View>
+          ) : (
+            trendingTopics.map((topic, index) => {
+              const isLocked = !isSubscribed && index >= 3;
+              
+              return (
+                <Animatable.View
+                  key={index}
+                  animation="fadeInUp"
+                  delay={600 + index * 100}
+                >
+                  <TouchableOpacity
+                    style={[
+                      styles.topicItem,
+                      selectedTopic?.topic === topic.topic && styles.topicItemActive,
+                      isLocked && styles.topicItemLocked
+                    ]}
+                    onPress={() => handleTopicSelect(topic)}
+                    disabled={loading}
+                  >
+                    <View style={styles.topicContent}>
+                      <View style={styles.topicHeader}>
+                        <Text style={styles.topicTitle}>
+                          {topic.topic}
+                          {isLocked && ' 🔒'}
+                        </Text>
+                        <View style={[
+                          styles.volumeBadge,
+                          { backgroundColor: getVolumeColor(topic.volume) }
+                        ]}>
+                          <Text style={styles.volumeText}>{topic.volume}</Text>
+                        </View>
+                      </View>
+                      
+                      <Text style={styles.topicCategory}>{topic.category}</Text>
+                      <Text style={styles.topicDescription} numberOfLines={2}>
+                        {topic.suggested_content}
+                      </Text>
+                      
+                      <View style={styles.hashtagsContainer}>
+                        {topic.hashtags.slice(0, 3).map((hashtag, hashIndex) => (
+                          <Text key={hashIndex} style={styles.hashtag}>
+                            {hashtag}
+                          </Text>
+                        ))}
+                      </View>
+                    </View>
+                  </TouchableOpacity>
+                </Animatable.View>
+              );
+            })
           )}
         </Animatable.View>
+
+        {/* Content Ideas */}
+        {selectedTopic && (
+          <Animatable.View animation="fadeInUp" delay={800} style={styles.contentIdeasCard}>
+            <Text style={styles.sectionTitle}>
+              💡 Content Ideas for "{selectedTopic.topic}"
+            </Text>
+            
+            {loading ? (
+              <View style={styles.loadingState}>
+                <Text style={styles.loadingText}>Generating content ideas...</Text>
+              </View>
+            ) : (
+              <View style={styles.contentIdeasContainer}>
+                <Text style={styles.contentIdeasText}>
+                  {contentIdeas}
+                </Text>
+              </View>
+            )}
+          </Animatable.View>
+        )}
       </View>
-
-      {/* AI Assistant Modal */}
-      <Modal
-        visible={aiModalVisible}
-        animationType="slide"
-        presentationStyle="pageSheet"
-        onRequestClose={() => setAiModalVisible(false)}
-      >
-        <View style={styles.modalContainer}>
-          <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>AI Content Assistant</Text>
-            <TouchableOpacity onPress={() => setAiModalVisible(false)}>
-              <Text style={styles.modalCloseText}>Close</Text>
-            </TouchableOpacity>
-          </View>
-
-          <View style={styles.modalContent}>
-            <Text style={styles.modalLabel}>What would you like to generate?</Text>
-            <View style={styles.aiTypeButtons}>
-              {[
-                { key: 'idea', label: 'Ideas' },
-                { key: 'outline', label: 'Outline' },
-                { key: 'content', label: 'Full Content' }
-              ].map((type) => (
-                <TouchableOpacity
-                  key={type.key}
-                  style={[
-                    styles.aiTypeButton,
-                    aiType === type.key && styles.aiTypeButtonActive
-                  ]}
-                  onPress={() => setAiType(type.key as any)}
-                >
-                  <Text style={[
-                    styles.aiTypeButtonText,
-                    aiType === type.key && styles.aiTypeButtonTextActive
-                  ]}>
-                    {type.label}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-
-            <Text style={styles.modalLabel}>Topic or subject:</Text>
-            <TextInput
-              style={styles.modalInput}
-              placeholder="Enter a topic (e.g., 'React Native development')"
-              placeholderTextColor="#6B7280"
-              value={aiTopic}
-              onChangeText={setAiTopic}
-            />
-
-            <TouchableOpacity
-              style={[styles.generateButton, loading && styles.generateButtonDisabled]}
-              onPress={generateWithAI}
-              disabled={loading}
-            >
-              {loading ? (
-                <ActivityIndicator size="small" color="white" />
-              ) : (
-                <Text style={styles.generateButtonText}>Generate Content</Text>
-              )}
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
     </ScrollView>
   );
 }
@@ -443,7 +324,7 @@ export default function CreateScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#111827',
+    backgroundColor: '#F8FAFC',
   },
   contentContainer: {
     paddingBottom: 100,
@@ -461,273 +342,249 @@ const styles = StyleSheet.create({
   },
   headerSubtitle: {
     fontSize: 16,
-    color: 'rgba(255, 255, 255, 0.7)',
+    color: 'rgba(255, 255, 255, 0.9)',
   },
   content: {
     flex: 1,
     paddingHorizontal: 24,
     paddingTop: 24,
   },
-  inputCard: {
-    backgroundColor: '#1f2937',
+  industryCard: {
+    backgroundColor: 'white',
     borderRadius: 16,
     padding: 20,
     marginBottom: 20,
-    borderWidth: 1,
-    borderColor: '#374151',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 4,
   },
-  inputLabel: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#f9fafb',
-    marginBottom: 12,
-  },
-  titleInput: {
+  sectionTitle: {
     fontSize: 18,
-    color: '#f9fafb',
-    backgroundColor: '#374151',
-    borderRadius: 8,
-    padding: 16,
     fontWeight: '600',
-  },
-  editorCard: {
-    backgroundColor: '#1f2937',
-    borderRadius: 16,
-    padding: 20,
-    marginBottom: 20,
-    borderWidth: 1,
-    borderColor: '#374151',
-  },
-  editorHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+    color: '#1E293B',
     marginBottom: 16,
   },
-  editorControls: {
+  industryScroll: {
     flexDirection: 'row',
-    backgroundColor: '#374151',
-    borderRadius: 8,
-    padding: 4,
   },
-  modeButton: {
+  industryChip: {
+    backgroundColor: '#F1F5F9',
     paddingHorizontal: 16,
     paddingVertical: 8,
-    borderRadius: 6,
+    borderRadius: 20,
+    marginRight: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
   },
-  modeButtonActive: {
-    backgroundColor: '#3B82F6',
+  industryChipActive: {
+    backgroundColor: '#1E40AF',
+    borderColor: '#1E40AF',
   },
-  modeButtonText: {
+  industryChipText: {
     fontSize: 14,
-    color: '#9CA3AF',
+    color: '#64748B',
     fontWeight: '500',
   },
-  modeButtonTextActive: {
+  industryChipTextActive: {
     color: 'white',
   },
-  contentEditor: {
-    fontSize: 16,
-    color: '#f9fafb',
-    backgroundColor: '#374151',
-    borderRadius: 8,
-    padding: 16,
-    minHeight: 300,
-    textAlignVertical: 'top',
-    fontFamily: 'monospace',
+  platformCard: {
+    backgroundColor: 'white',
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 4,
   },
-  previewContainer: {
-    backgroundColor: '#374151',
-    borderRadius: 8,
-    padding: 16,
-    minHeight: 300,
-    maxHeight: 400,
+  platformButtons: {
+    flexDirection: 'row',
+    gap: 12,
   },
-  previewH1: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#f9fafb',
-    marginBottom: 16,
+  platformButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#F8FAFC',
+    paddingVertical: 16,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: '#E2E8F0',
   },
-  previewH2: {
+  platformButtonActive: {
+    backgroundColor: '#EBF4FF',
+    borderColor: '#1E40AF',
+  },
+  platformEmoji: {
     fontSize: 20,
-    fontWeight: '600',
-    color: '#f9fafb',
-    marginBottom: 12,
+    marginRight: 8,
   },
-  previewH3: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#f9fafb',
-    marginBottom: 8,
-  },
-  previewText: {
+  platformButtonText: {
     fontSize: 16,
-    color: '#d1d5db',
-    lineHeight: 24,
-    marginBottom: 8,
+    fontWeight: '600',
+    color: '#64748B',
   },
-  previewSpacing: {
-    height: 16,
+  platformButtonTextActive: {
+    color: '#1E40AF',
   },
-  editorFooter: {
+  customTopicCard: {
+    backgroundColor: 'white',
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  customTopicRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  customTopicInput: {
+    flex: 1,
+    backgroundColor: '#F8FAFC',
+    borderRadius: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    fontSize: 16,
+    color: '#1E293B',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  customTopicButton: {
+    backgroundColor: '#1E40AF',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 8,
+    justifyContent: 'center',
+  },
+  customTopicButtonText: {
+    color: 'white',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  topicsCard: {
+    backgroundColor: 'white',
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  topicsHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginTop: 16,
-    paddingTop: 16,
-    borderTopWidth: 1,
-    borderTopColor: '#374151',
+    marginBottom: 16,
   },
-  characterCount: {
+  refreshText: {
     fontSize: 14,
-    color: '#9CA3AF',
+    color: '#1E40AF',
+    fontWeight: '600',
   },
-  aiButton: {
-    backgroundColor: '#374151',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 8,
+  topicItem: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  topicItemActive: {
+    backgroundColor: '#EBF4FF',
+    borderColor: '#1E40AF',
+  },
+  topicItemLocked: {
+    opacity: 0.6,
+  },
+  topicContent: {
+    flex: 1,
+  },
+  topicHeader: {
     flexDirection: 'row',
-    alignItems: 'center',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 8,
+  },
+  topicTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#1E293B',
+    flex: 1,
+    marginRight: 12,
+  },
+  volumeBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  volumeText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: 'white',
+  },
+  topicCategory: {
+    fontSize: 12,
+    color: '#1E40AF',
+    fontWeight: '600',
+    marginBottom: 8,
+  },
+  topicDescription: {
+    fontSize: 14,
+    color: '#64748B',
+    lineHeight: 20,
+    marginBottom: 12,
+  },
+  hashtagsContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 8,
   },
-  aiButtonText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#3B82F6',
-  },
-  excerptInput: {
-    fontSize: 14,
-    color: '#f9fafb',
-    backgroundColor: '#374151',
+  hashtag: {
+    fontSize: 12,
+    color: '#1E40AF',
+    backgroundColor: '#EBF4FF',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
     borderRadius: 8,
-    padding: 16,
-    minHeight: 80,
-    textAlignVertical: 'top',
   },
-  actionsCard: {
-    backgroundColor: '#1f2937',
+  contentIdeasCard: {
+    backgroundColor: 'white',
     borderRadius: 16,
     padding: 20,
-    borderWidth: 1,
-    borderColor: '#374151',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 4,
   },
-  actionButtons: {
-    flexDirection: 'row',
-    gap: 12,
-    marginBottom: 16,
-  },
-  draftButton: {
-    flex: 1,
-    backgroundColor: '#374151',
-    paddingVertical: 16,
+  contentIdeasContainer: {
+    backgroundColor: '#F8FAFC',
     borderRadius: 12,
-    alignItems: 'center',
-  },
-  draftButtonText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#f9fafb',
-  },
-  publishButton: {
-    flex: 1,
-    backgroundColor: '#3B82F6',
-    paddingVertical: 16,
-    borderRadius: 12,
-    alignItems: 'center',
-  },
-  publishButtonDisabled: {
-    backgroundColor: '#6B7280',
-  },
-  publishButtonText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: 'white',
-  },
-  limitWarning: {
-    fontSize: 14,
-    color: '#EF4444',
-    textAlign: 'center',
-    fontWeight: '500',
-  },
-  modalContainer: {
-    flex: 1,
-    backgroundColor: '#111827',
-  },
-  modalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: 24,
-    paddingTop: 60,
-    borderBottomWidth: 1,
-    borderBottomColor: '#374151',
-  },
-  modalTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#f9fafb',
-  },
-  modalCloseText: {
-    fontSize: 16,
-    color: '#3B82F6',
-    fontWeight: '600',
-  },
-  modalContent: {
-    flex: 1,
-    padding: 24,
-  },
-  modalLabel: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#f9fafb',
-    marginBottom: 12,
-  },
-  aiTypeButtons: {
-    flexDirection: 'row',
-    gap: 12,
-    marginBottom: 24,
-  },
-  aiTypeButton: {
-    flex: 1,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    backgroundColor: '#374151',
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  aiTypeButtonActive: {
-    backgroundColor: '#3B82F6',
-  },
-  aiTypeButtonText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#9CA3AF',
-  },
-  aiTypeButtonTextActive: {
-    color: 'white',
-  },
-  modalInput: {
-    fontSize: 16,
-    color: '#f9fafb',
-    backgroundColor: '#374151',
-    borderRadius: 8,
     padding: 16,
-    marginBottom: 24,
   },
-  generateButton: {
-    backgroundColor: '#3B82F6',
-    paddingVertical: 16,
-    borderRadius: 8,
+  contentIdeasText: {
+    fontSize: 14,
+    color: '#1E293B',
+    lineHeight: 22,
+  },
+  loadingState: {
     alignItems: 'center',
+    paddingVertical: 32,
   },
-  generateButtonDisabled: {
-    backgroundColor: '#6B7280',
-  },
-  generateButtonText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: 'white',
+  loadingText: {
+    fontSize: 14,
+    color: '#64748B',
   },
 });
